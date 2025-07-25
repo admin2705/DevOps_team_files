@@ -1,0 +1,57 @@
+@Library('hrms-lib') _     #system--credential--'hrms-lib'---link_of_shared_library
+
+pipeline {
+    agent { label 'agent' }
+
+    environment {
+        DOCKERHUB_CREDENTIALS = 'dockerhub'
+        DOCKERHUB_USERNAME = 'dadarao4141'
+        FRONTEND_IMAGE = "${DOCKERHUB_USERNAME}/hrms-frontend:v1"
+        BACKEND_IMAGE = "${DOCKERHUB_USERNAME}/hrms-backend:v1"
+    }
+
+    stages {
+        stage('Clone Code') {
+            steps {
+                script {
+                    code_checkout('https://github.com/DadaraoRaut/hrms-tej.git', 'main')
+                }
+            }
+        }
+
+        stage('Docker Build Images') {
+            steps {
+                script {
+                    docker_build(FRONTEND_IMAGE, './frontend')
+                    docker_build(BACKEND_IMAGE, './Backend_hrms')
+                }
+            }
+        }
+
+        stage('Docker Push Images') {
+            steps {
+                script {
+                    docker_push(FRONTEND_IMAGE)
+                    docker_push(BACKEND_IMAGE)
+                }
+            }
+        }
+
+        stage('Deploy to Kubernetes') {
+            steps {
+                script {
+                    deploy_kubernetes('Kubernetesid', 'deployment.yml')
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo '✅ Pipeline completed successfully!'
+        }
+        failure {
+            echo '❌ Pipeline failed! Check logs.'
+        }
+    }
+}
