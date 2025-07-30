@@ -1,0 +1,249 @@
+
+Master-server 
+
+chmod 400 /Users/tejasbhandirge/Downloads/ansible-key.pem
+
+ssh -i /Users/tejasbhandirge/Downloads/ansible-key.pem ubuntu@18.191.232.81
+
+
+worker
+
+ssh -i /Users/tejasbhandirge/Downloads/ansible-key.pem ubuntu@3.140.239.111
+
+ssh -i /Users/tejasbhandirge/Downloads/ansible-key.pem ubuntu@3.129.87.108
+
+ssh -i /Users/tejasbhandirge/Downloads/ansible-key.pem ubuntu@3.17.128.187
+
+----------------------------------------------------------------------------------------------------------------------
+
+commands to install ansible
+
+sudo apt-add-repository ppa:ansible/ansible -y
+sudo apt update
+sudo apt install ansible -y
+
+----------------------------------------------------------------------------------------------------------------------
+copy key to master instance in keys directory
+
+mkdir keys
+cd keys
+
+scp -i /Users/tejasbhandirge/Downloads/ansible-key.pem /Users/tejasbhandirge/Downloads/ansible-key.pem ubuntu@18.191.232.81:/home/ubuntu/keys
+
+----------------------------------------------------------------------------------------------------------------------
+
+add servers into hosts file
+
+sudo vim /etc/ansible/hosts
+
+# Ex 2: A collection of hosts belonging to the 'webservers' group:
+[servers]
+server_1 ansible_host=3.140.239.111
+server_2 ansible_host=3.129.87.108
+
+[prd]
+server_3 ansible_host=3.17.128.187
+
+[all:vars]
+ansible_python_interpreter=/usr/bin/python3
+ansible_user=ubuntu
+ansible_ssh_private_key_file=/home/ubuntu/keys/ansible-key.pem
+
+----------------------------------------------------------------------------------------------------------------------
+
+commands to check servers are connected
+
+ansible servers -m ping
+ansible prd -m ping
+ansible all -m ping
+
+ansible-inventory --list
+
+------------------------------------------------
+
+playbook files
+
+mkdir playbooks
+cd playbooks
+
+-------------------------
+
+vim date_playbook.yaml
+
+- name: Dates Playbook
+  hosts: all
+  tasks:
+    - name: show date
+      command: date
+
+    - name: show uptime
+      command: uptime
+
+
+ansible-playbook date_playbook.yaml
+
+-----------------------------------
+
+vim install_nginx_playbook.yaml
+
+- name: install nginx and start it
+  hosts: < servers or prd or all > #sletect any one (servers or prd or all)
+  become: yes
+  tasks:
+    - name: install nginx
+      apt:
+        name: nginx
+        state: latest
+    - name: start nginx
+      service:
+          name: nginx
+          state: started
+          enabled: yes
+
+
+ansible-playbook install_nginx_playbook.yaml
+
+--------------------------------------------
+
+vim deploy_ststic_page_playbook.yaml
+
+- name: install nginx and static webpage
+  hosts: all
+  become: yes
+  tasks:
+    - name: install nginx
+      apt:
+        name: nginx
+        state: latest
+
+    - name: start nginx
+      service:
+        name: nginx
+        state: started
+        enabled: yes
+
+    - name: deploy webpage
+      copy:
+        src: index.html
+        dest: /var/www/html
+
+
+
+ansible-playbook deploy_ststic_page_playbook.yaml
+
+
+--------------------------------------------
+
+vim index.html
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Tejas | Web Developer</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+
+    body {
+      background: linear-gradient(135deg, #1d1d1d, #3a3a3a);
+      color: #fff;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      padding: 20px;
+    }
+
+    header {
+      text-align: center;
+      animation: fadeIn 1s ease-in-out;
+    }
+
+    header h1 {
+      font-size: 3rem;
+      color: #00f7ff;
+    }
+
+    header p {
+      font-size: 1.2rem;
+      margin-top: 10px;
+      color: #d1d1d1;
+    }
+
+    .buttons {
+      margin-top: 30px;
+    }
+
+    .buttons a {
+      text-decoration: none;
+      color: #fff;
+      background: #00f7ff;
+      padding: 12px 24px;
+      border-radius: 30px;
+      margin: 0 10px;
+      font-weight: bold;
+      transition: background 0.3s ease;
+    }
+
+    .buttons a:hover {
+      background: #00c2cc;
+    }
+
+    footer {
+      position: absolute;
+      bottom: 20px;
+      font-size: 0.9rem;
+      color: #888;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(-20px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    @media (max-width: 600px) {
+      header h1 {
+        font-size: 2rem;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Hi, I'm Tejas</h1>
+    <p>Cloud Enthusiast & Web Developer passionate about building modern apps ☁️💻</p>
+    <div class="buttons">
+      <a href="#">My Work</a>
+      <a href="#">Contact Me</a>
+    </div>
+  </header>
+
+  <footer>© 2025 Tejas Bhandirge</footer>
+</body>
+</html>
+
+----------------------------------------------------------------------------------------------------------------------
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
