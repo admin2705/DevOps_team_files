@@ -1,0 +1,70 @@
+Download -Terraform for window 64AMD -Add terroform.exe in C folder and then add path to system variable
+                   - AWS cli v2
+
+In vs code create new file and thn new project 
+                  
+create two file 1)Main.tf-- where we have to integrate aws cli by giving command in vs code terminal "aws configure" and give IAM private key and public key and region 
+                       2) terraform.tf-- in this file we have to write -aws terraform proviter-   terraform {
+                                                                                                                required_providers {
+                                                                                                                aws = {
+                                                                                                                   source = "hashicorp/aws"                                                                                                                                                                           version = "6.8.0"
+                                                                                                                      }
+                                                                                                              }
+                                                                                                           }
+
+                                                                                                                provider "aws" {
+                                                                                                                  # Configuration options
+                                                                                                               }
+then save this two files
+then in folder in vs code terminal give command -->"terraform init" then "terraform plan"--> "terraform apply"
+
+
+
+ec2 instance   ---> write below code ---->terraform plan ----->terrafom apply
+# Key pair
+resource "aws_key_pair" "deployer" {
+  key_name   = "terra-key"
+  public_key = file("C:/Projects/terraform/terra-key.pub")
+}
+
+# Default VPC
+resource "aws_default_vpc" "default" {}
+
+# Security group
+resource "aws_security_group" "terrasecurity" {
+  name        = "allow-ssh"
+  description = "Allow SSH inbound traffic"
+  vpc_id      = aws_default_vpc.default.id
+
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+# EC2 instance
+resource "aws_instance" "my_instance" {
+  ami                    = "ami-0d1b5a8c13042c939" # Ubuntu
+  instance_type          = "t2.micro"
+  key_name               = aws_key_pair.deployer.key_name
+  vpc_security_group_ids = [aws_security_group.terrasecurity.id]
+
+  tags = {
+    Name = "Terraform-EC2"
+  }
+}
+
+
+
+
+
+
