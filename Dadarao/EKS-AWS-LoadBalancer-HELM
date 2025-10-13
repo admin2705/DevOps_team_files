@@ -1,0 +1,250 @@
+# Create one EC2 instance and ssh into terminal
+
+#Create IAM user and genrate private key and publick key with attach policy --AdminitratorAccess
+
+#Download AWS CLI
+
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+Install unzip if not available
+sudo apt update
+sudo apt install unzip -y
+unzip awscliv2.zip
+sudo ./aws/install
+aws --version
+
+#aws configure
+aws configure  
+add key genrated from IAM 
+AWS Access Key ID: Your access key
+AWS Secret Access Key: Your secret key
+Default region name: e.g., us-east-1
+Default output format: json
+
+#Install eksctl
+-curl --silent --location "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" | tar xz -C /tmp
+-sudo mv /tmp/eksctl /usr/local/bin
+-eksctl version
+
+#install kubectl
+curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+kubectl version --client
+
+
+#Create EKS cluster
+eksctl create cluster \
+    --name=my-cluster \
+    --region=us-east-1 \
+    --nodes=2 \
+    --node-type=t3.medium \
+    --managed
+This takes about 15-20 minutes
+
+
+#Install helm 
+curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+chmod 700 get_helm.sh
+./get_helm.sh
+
+
+# 1. Initial Setup
+mkdir -p hrms-chart/{templates,charts}
+
+• Created the Helm chart directory structure with templates and charts folders
+
+## 2. Chart Metadata
+  Created Chart.yaml
+• Defined chart name, version, and description
++    1: apiVersion: v2
++    2: name: hrms-app
++    3: description: Three-tier HRMS application
++    4: version: 0.1.0
++    5: appVersion: "1.0"
+
+
+
+## 3. Configuration File
+# Created values.yaml
+frontend:
+  image:
+    repository: dadarao/hrms-frontend
+    tag: s1
+    pullPolicy: Always
+  service:
+    type: ClusterIP  # ✅ Keep as ClusterIP
+    port: 80
+  replicas: 1
+
+backend:
+  image:
+    repository: dadarao/hrms-backend
+    tag: s1
+    pullPolicy: Always
+  service:
+    port: 8080
+  replicas: 1
+  env:
+    mysql:
+      host: mysql-service
+      port: 3306
+      user: root
+      password: root
+      database: hrms
+
+mysql:
+  image:
+    repository: mysql
+    tag: "8"
+  service:
+    port: 3306
+  replicas: 1
+  env:
+    rootPassword: root
+    database: hrms
+
+ingress:
+  enabled: true
+  className: "alb"                    
+  annotations:
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+  hosts:
+    - host: hrms.example.com          # ✅ You can use ALB DNS later
+      paths:
+        - path: /
+          pathType: Prefix
+          service: frontend-service
+        - path: /api
+          pathType: Prefix
+          service: springboot-service
+
+
+• Set default values for frontend, backend, and MySQL configurations
+• Added ingress and load balancer settings
+
+## 4. Template Files Created
+# Created 7 template files:
+
+
+Frontend:
+• frontend-deployment.yaml - Frontend app deployment
+• frontend-service.yaml - LoadBalancer service for external access
+
+Backend:
+• backend-deployment.yaml - Backend app deployment
+• backend-service.yaml - ClusterIP service (internal access via ingress)
+
+Database:
+• mysql-deployment.yaml -Mysql deployment file 
+• mysql-service.yaml - Headless service for MySQL
+
+Networking:
+• ingress.yaml - Path-based routing (/ → frontend, /api → backend)
+
+
+hrms-chart/
+├── Chart.yaml
+├── templates/
+│   ├── frontend-deployment.yaml
+│   ├── frontend-service.yaml
+│   ├── backend-deployment.yaml
+│   ├── backend-service.yaml
+│   ├── ingress.yaml
+│   └── mysql-statefulset.yaml
+└── values.yaml
+
+
+
+
+#Installing ingress controller
+•command --> helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+•command -->helm install ingress-nginx ingress-nginx/ingress-nginx --namespace ingress-nginx --create-namespace
+
+
+# Install AWS Load Balancer 
+
+1. Get aws account ID
+aws sts get-caller-identity --query Account --output text
+
+2. Create OIDC provider
+eksctl utils associate-iam-oidc-provider --cluster=my-cluster --approve
+
+3. Download IAM policy 
+curl -o iam_policy.json https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/main/docs/install/iam_policy.json
+
+4. Create IAM policy
+aws iam create-policy \
+    --policy-name AWSLoadBalancerControllerIAMPolicy \
+    --policy-document file://iam_policy.json
+
+5. Create Service Account (Replace YOUR-ACCOUNT-ID)
+# Use the account ID from step 1
+eksctl create iamserviceaccount \
+    --cluster=my-cluster \
+    --namespace=kube-system \
+    --name=aws-load-balancer-controller \
+    --attach-policy-arn=arn:aws:iam::YOUR-ACCOUNT-ID:policy/AWSLoadBalancerControllerIAMPolicy \
+    --override-existing-serviceaccounts \
+    --approve
+
+6. Install AWS Load Balancer Controller
+helm repo add eks https://aws.github.io/eks-charts
+helm repo update
+helm install aws-load-balancer-controller eks/aws-load-balancer-controller \
+    -n kube-system \
+    --set clusterName=my-cluster \
+    --set serviceAccount.create=false \
+    --set serviceAccount.name=aws-load-balancer-controller
+
+7.Verify installation
+kubectl get deployment -n kube-system aws-load-balancer-controller
+kubectl get pods -n kube-system | grep aws-load-balancer-controller
+
+
+# deploy application using HELM
+ helm install hrms-app ./hrms-chart
+
+
+Important commands --->
+                                             #Get application URL 
+                                             kubectl get ingress hrms-ingress        ----->it will take 2-3 minute
+
+                                             # Check current nodegroups
+                                                eksctl get nodegroup --cluster=my-cluster
+
+                                            # Scale down to 0 (example nodegroup name)
+                                             eksctl scale nodegroup --cluster=my-cluster --name=ng-12345678 --nodes=0
+
+                                            # Verify scaling
+                                             kubectl get nodes
+
+                                            #Update minimum capacity of nodegroup
+                                              eksctl scale nodegroup --cluster=my-cluster --name=ng-793fed0b --nodes=0 --nodes-min=0 --nodes-max=2
+
+                                            #scale up nodegroup
+                                              eksctl scale nodegroup --cluster=my-cluster --name=ng-793fed0b --nodes=2
+
+
+Architecture Summary:    Internet
+                                               ↓
+                                       AWS Application Load Balancer
+                                               ↓
+                                       EKS Ingress Controller  
+                                               ↓
+                                       ├── / → frontend-service (ClusterIP) → Frontend Pod
+                                       └── /api → springboot-service (ClusterIP) → Backend Pod
+                                                                                                                     ↓
+                                                                                                           mysql-service → MySQL Pod
+
+
+
+ 
+
+
+
+
+
+
+
+
