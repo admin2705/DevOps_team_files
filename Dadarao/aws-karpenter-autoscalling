@@ -1,0 +1,175 @@
+Step 1: Prerequisites Setup
+You need to have basic tools ready like kubectl, helm, and AWS CLI configured. These are the building blocks that let you communicate with your cluster and AWS services.
+
+Step 2: Set Environment Variables
+Define important cluster information like cluster name, region, and AWS account ID. This helps all the subsequent commands know which cluster and AWS account to work with.
+
+Step 3: Create IAM Roles and Permissions
+This is the security layer. You need two main roles:
+
+Karpenter Controller Role: Allows Karpenter to make decisions about creating/deleting EC2 instances
+
+Node Instance Role: Allows the EC2 instances (worker nodes) to join your cluster and run pods
+
+Why needed: AWS requires proper permissions before any service can create or manage resources on your behalf.
+
+Step 4: Tag AWS Resources
+You tag your subnets and security groups with special labels like karpenter.sh/discovery=your-cluster-name.
+
+Why needed: This tells Karpenter which network resources it's allowed to use when creating new nodes.
+
+Step 5: Install Karpenter Using Helm
+Helm is like an app store for Kubernetes. You use it to install the Karpenter application into your cluster.
+
+Why needed: This deploys the actual Karpenter controller pods that will monitor your cluster and make scaling decisions.
+
+Step 6: Create EC2NodeClass
+This defines what type of EC2 instances Karpenter can create - things like which AMI (operating system image) to use, which subnets, security groups, and instance types are allowed.
+
+Why needed: It's like giving Karpenter a shopping list of approved instance options.
+
+Step 7: Create NodePool
+This sets the rules for when and how to scale - like maximum number of nodes, what types of workloads trigger scaling, and when to remove unused nodes.
+
+Why needed: Without rules, Karpenter wouldn't know when to scale up or down, potentially causing costs to spiral or applications to fail.
+
+How It All Works Together
+Once installed, Karpenter continuously watches for pods that can't be scheduled (usually because there aren't enough resources). When it finds such pods, it quickly provisions new EC2 instances that match the requirements. When nodes become underutilized, it consolidates workloads and terminates unnecessary instances to save costs.
+
+
+
+
+
+
+#Implementing Karpenter for autoscalling
+1. set Evnoirenment variable 
+export CLUSTER_NAME=my-cluster
+export AWS_DEFAULT_REGION=us-east-1
+export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+
+2.Deploy CloudFormation Stack with Correct Capabilities
+aws cloudformation deploy \
+  --stack-name Karpenter-${CLUSTER_NAME} \
+  --template-file karpenter.yaml \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --parameter-overrides ClusterName=${CLUSTER_NAME}
+
+# Check stack status (this will take 2-3 minutes)
+aws cloudformation describe-stacks --stack-name Karpenter-${CLUSTER_NAME} --query 'Stacks[0].StackStatus'
+
+3.Create IAM service account for Karpenter
+eksctl create iamserviceaccount \
+  --cluster="${CLUSTER_NAME}" \
+  --name=karpenter \
+  --namespace=karpenter \
+  --role-name="${CLUSTER_NAME}-karpenter" \
+  --attach-policy-arn="arn:aws:iam::${AWS_ACCOUNT_ID}:policy/KarpenterControllerPolicy-${CLUSTER_NAME}" \
+  --role-only \
+  --approve
+
+# Create IAM identity mapping
+eksctl create iamidentitymapping \
+  --cluster "${CLUSTER_NAME}" \
+  --arn "arn:aws:iam::${AWS_ACCOUNT_ID}:role/KarpenterNodeRole-${CLUSTER_NAME}" \
+  --group system:bootstrappers \
+  --group system:nodes \
+  --username system:node:{{EC2PrivateDNSName}}
+
+4. Install karpenter using HELM 
+helm repo remove karpenter 2>/dev/null || true
+
+# Install directly from OCI registry without adding repo
+helm upgrade --install karpenter oci://public.ecr.aws/karpenter/karpenter \
+  --version "1.0.1" \
+  --namespace "karpenter" \
+  --create-namespace \
+  --set "serviceAccount.annotations.eks\.amazonaws\.com/role-arn=arn:aws:iam::${AWS_ACCOUNT_ID}:role/${CLUSTER_NAME}-karpenter" \
+  --set "clusterName=${CLUSTER_NAME}" \
+  --set "clusterEndpoint=${CLUSTER_ENDPOINT}" \
+  --set "interruptionQueue=${CLUSTER_NAME}" \
+  --wait
+
+
+
+
+5.Tag subnet and security group
+# Tag subnets for Karpenter discovery
+for NODEGROUP in $(aws eks list-nodegroups --cluster-name "${CLUSTER_NAME}" \
+    --query 'nodegroups[0]' --output text); do
+    aws ec2 describe-subnets --filters \
+        "Name=vpc-id,Values=$(aws eks describe-cluster --name "${CLUSTER_NAME}" \
+        --query "cluster.resourcesVpcConfig.vpcId" --output text)" \
+        --query 'Subnets[*].SubnetId' --output text | tr '\t' '\n' | \
+        while read subnet; do
+            aws ec2 create-tags \
+                --resources "${subnet}" \
+                --tags "Key=karpenter.sh/discovery,Value=${CLUSTER_NAME}"
+        done
+    break
+done
+
+# Tag security groups
+CLUSTER_SG=$(aws eks describe-cluster --name "${CLUSTER_NAME}" \
+    --query "cluster.resourcesVpcConfig.clusterSecurityGroupId" --output text)
+
+aws ec2 create-tags \
+    --resources "${CLUSTER_SG}" \
+    --tags "Key=karpenter.sh/discovery,Value=${CLUSTER_NAME}"
+
+6. Create EC2NodeClass and NodePool
+# Create EC2NodeClass
+cat <<EOF | kubectl apply -f -
+apiVersion: karpenter.k8s.aws/v1beta1
+kind: EC2NodeClass
+metadata:
+  name: default
+spec:
+  amiFamily: AL2
+  subnetSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: "${CLUSTER_NAME}"
+  securityGroupSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: "${CLUSTER_NAME}"
+  role: "KarpenterNodeInstanceProfile-${CLUSTER_NAME}"
+EOF
+
+# Create NodePool
+cat <<EOF | kubectl apply -f -
+apiVersion: karpenter.sh/v1beta1
+kind: NodePool
+metadata:
+  name: default
+spec:
+  template:
+    spec:
+      requirements:
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["amd64"]
+        - key: kubernetes.io/os
+          operator: In
+          values: ["linux"]
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["spot", "on-demand"]
+        - key: karpenter.k8s.aws/instance-category
+          operator: In
+          values: ["c", "m", "r"]
+        - key: karpenter.k8s.aws/instance-generation
+          operator: Gt
+          values: ["2"]
+      nodeClassRef:
+        apiVersion: karpenter.k8s.aws/v1beta1
+        kind: EC2NodeClass
+        name: default
+      taints:
+        - key: example.com/default-taint
+          value: "true"
+          effect: NoSchedule
+  limits:
+    cpu: 1000
+  disruption:
+    consolidationPolicy: WhenEmpty
+    consolidateAfter: 30s
+EOF
