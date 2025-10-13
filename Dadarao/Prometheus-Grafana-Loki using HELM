@@ -1,0 +1,354 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hrms
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mysql-secret
+  namespace: hrms
+type: Opaque
+stringData:
+  MYSQL_ROOT_PASSWORD: "root"
+  MYSQL_DATABASE: "hrms"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql-service
+  namespace: hrms
+spec:
+  type: ClusterIP
+  selector:
+    app: mysql
+  ports:
+    - port: 3306
+      targetPort: 3306
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mysql
+  namespace: hrms
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mysql
+  template:
+    metadata:
+      labels:
+        app: mysql
+    spec:
+      containers:
+        - name: mysql
+          image: mysql:8
+          ports:
+            - containerPort: 3306
+          env:
+            - name: MYSQL_ROOT_PASSWORD
+              value: "root"
+            - name: MYSQL_DATABASE
+              value: "hrms"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: springboot-service
+  namespace: hrms
+spec:
+  type: ClusterIP
+  selector:
+    app: backend
+  ports:
+    - protocol: TCP
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend-deployment
+  namespace: hrms
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      initContainers:
+        - name: wait-for-mysql
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for MySQL..."
+              until nc -z mysql-service 3306; do
+                echo "MySQL not ready, sleeping 3s..."
+                sleep 3
+              done
+              echo "MySQL is ready!"
+      containers:
+        - name: backend
+          image: dadarao/hrms-backend-fixed
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+          env:
+            - name: SPRING_DATASOURCE_URL
+              value: "jdbc:mysql://mysql-service:3306/hrms"
+            - name: SPRING_DATASOURCE_USERNAME
+              value: "root"
+            - name: SPRING_DATASOURCE_PASSWORD
+              value: "root"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend-service
+  namespace: hrms
+spec:
+  type: NodePort
+  selector:
+    app: frontend
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend-deployment
+  namespace: hrms
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      containers:
+        - name: frontend
+          image: dadarao/hrms-frontend-fixed
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 80
+
+
+PROMETHIOUS GRAFANA
+ 
+Prerequisite
+Create kubeadm cluster
+ 
+Install on k8smaster terminal/server
+ 
+sudo apt-get update
+sudo apt-get install docker.io -y
+sudo usermode -aG docker $USER && newgrp docker
+ 
+promethous installation …fire commands on k8s master
+helm is a package manager for Kubernetes manifest file where you can installed manage delete uninstall a lot of reposiratoeis or any application which is to be deployed on Kubernetes.
+ 
+curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+chmod 700 get_helm.sh
+./get_helm.sh
+ 
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm repo add stable https://charts.helm.sh/stable
+helm repo update
+kubectl create namespace monitoring
+helm install kind-prometheus prometheus-community/kube-prometheus-stack --namespace monitoring --set prometheus.service.nodePort=30000 --set prometheus.service.type=NodePort --set grafana.service.nodePort=31000 --set grafana.service.type=NodePort --set alertmanager.service.nodePort=32000 --set alertmanager.service.type=NodePort --set prometheus-node-exporter.service.nodePort=32001 --set prometheus-node-exporter.service.type=NodePort
+kubectl get svc -n monitoring
+kubectl get namespace
+kubectl get svc -n monitoring
+kind-prometheus-kube-prome-prometheus yacha NodePort
+master pbip:30000
+security all traffic all tcp
+ 
+in promethous dashboard
+prompt takne ani graph check karne
+monitoring cpu and container
+enter expression
+sum (rate (container_cpu_usage_seconds_total{namespace="default"}[1m])) / sum (machine_cpu_cores) * 100
+set 5 minutes
+cfor cpu testing - app cha ip 4 tab madhe hit karne and cpu check karne…execute
+ 
+monitoring memory usage and container
+enter expression
+sum (container_memory_usage_bytes{namespace="default"}) by (pod)
+set 5 minutes
+ 
+ 
+ 
+ 
+ 
+monitoring Network
+enter expression
+sum(rate(container_network_receive_bytes_total{namespace="default"}[5m])) by (pod)
+set 5 minutes
+ 
+……………………………………………………………………………………………………………
+ 
+Grafana
+Go k8s master terminal paste below command
+kubectl get svc -n monitoring
+kubectl port-forward svc/kind-prometheus-grafana 3000:80 -n monitoring
+ 
+kind-prometheus-grafana yacha nodeport ghene
+k8s master pbip:grafana node port 31000
+ 
+login
+username - admin
+password – prom-operator
+ 
+grafana user managment
+home cha side la 3 dots tithe click karne
+go administration – users and access – users – new user
+name – kalpant
+email – kalpantgadekar111@gmail
+username – kalpant
+password – Kalpant@1993
+create user
+ 
+dashboard ka access baki logo ko nahi dena hai to
+change role
+viewer – save
+aapan user la fakt grafana dashboard view chi permission dili ahe
+testing go new tab paste master pbip:node port
+user sathi create kelela username & password dene tyala.
+…………………………………………………………………………………………………..
+ 
+Grafana me promethous connection establish karna hai to
+home - connection – data sources
+promethous cha data source asel tithe build a dashboard var click karne
+add vitualization
+(prometheous) click on datasource
+metric – select (container_cpu_usage_second_total)
+label filters
+select lable – namespace
+select value – monitoring
+run queries – blue colour border madhe aste
+ 
+go right side click virtulization-suggetion-choose dashboard             
+choose 3rd  dashboard         
+last 6hrs cha jagi 15 mins takne
+rightside la option ahe save dashboard
+save
+ashach steps ni bakiche dashboard add karu shakto
+ 
+kuberenetes cha complete dashboard banavnyasathi
+ 
+go on google search grafana dashboard
+go grafana dashboard
+search k8s dashboard/kubernetes cluster (prometheus)
+click on this dashboard
+righside option copy id to clipboard
+then go grafana ui
+click dashboard option-new-import
+add url-load
+victorialmetrcs-pod-all
+Choose prometheus
+import
+ithe dashboard disel home-dasboard-k8s dashboard
+Or search k8s dashboard
+ 
+ 
+…………………………………………………………end……………………………………
+ 
+ 
+ 
+ 
+ 
+Extra shots…
+Instance stop kelyas
+ 
+Observability madhe aapan – (monitoring-cpu network metrics) (logging-sign in fail huva or koi service hai wo error  mar rahi hai..error logs collect hote hai) (tracing- aapne koi error encounter kar liya ab us error tak kaise pahuchoge isliye tracing hota hai) (alerting cpu percentage jada hua to email aata hai)
+check karu shakto..
+metrics monitoring tracing ke liye grafana use karte hai
+visualize/dashboard banana ke liye grafana use karte hai.
+ 
+🔍 तुमच्या डॅशबोर्ड मधल्या महत्त्वाच्या गोष्टींचं अर्थ (मराठीत):
+🧠 Node Memory / CPU Stats:
+Memory Utilization = 40% (किती RAM वापरली गेली आहे)
+CPU Utilization = 5.6% (किती CPU वापरले जात आहे)
+Request / Limit % = Pod resources साठी किती reserve केले आहे आणि actual limit किती आहे
+🧵 Pod Level Stats:
+Pod memory: WSS (Working Set Size), RSS (Resident Set Size) → actual memory वापर
+CPU Core Usage: प्रत्येक  container किती कोर वापरत आहे
+Zero CPU Usage: frontend-deployment → काही issue आहे का ते तपासा
+🌐 Network Stats:
+प्रत्येक  Pod साठी inflow/outflow बघा (Kib/s मध्ये)
+उदाहरण:  Prometheus ला 375 Kib/s traffic मिळतोय
+📊 Grafana मधून हे कसं पाहायचं?
+Grafana → Dashboards → Kubernetes / Nodes / Pods / Cluster
+प्रत्येक डॅशबोर्ड मध्ये:
+Filters (Namespace, Pod, Node)
+Graphs (CPU, Memory, Disk, Network, Events)
+⚠️ कधी Alert करायचा?
+Prometheus Rule किंवा Alertmanager वापरून:
+Memory > 80% झालं तर
+CPU > 75% वापर होत असेल
+Disk Usage > 90%
+Pod CrashLoopBackOff झाला तर
+
+
+
+
+###########Configure Grafana After Login##############
+
+Add Prometheus as a Data Source (if not auto-configured):
+
+Go to Configuration → Data Sources → Add data source
+
+Select "Prometheus"
+
+URL: http://prometheus:9090
+
+Click "Save & Test"
+
+Import Kubernetes Dashboard:         
+
+Go to Dashboards → Import
+
+Enter dashboard ID: 15760 (Kubernetes cluster monitoring)
+
+Select "Prometheus" as the data source
+
+Click "Import"
+
+Popular dashboard IDs:
+
+15760 - Kubernetes Cluster Monitoring
+
+315 - Kubernetes Cluster Monitoring (alternative)
+
+8588 - Kubernetes Deployment Statefulset Daemonset metrics
+
+6417 - Kubernetes Cluster (Prometheus)
+
+
+
+##########LOKI#################
+# Add Grafana Helm repository
+helm repo add grafana https://grafana.github.io/helm-charts
+helm repo update
+
+# Install Loki stack (without Grafana and Prometheus)
+helm install loki grafana/loki-stack \
+  --namespace monitoring \
+  --set grafana.enabled=false \
+  --set prometheus.enabled=false \
+  --set promtail.enabled=true
+
+kubectl get pods -n monitoring
+kubectl get svc -n monitoring
