@@ -1,0 +1,371 @@
+Components Deployed:
+
+Fluent Bit - Collects and ships pod logs to CloudWatch Logs
+
+CloudWatch Agent - Collects node-level metrics (CPU, memory, disk, network)
+
+Prerequisites
+1. IAM Role Configuration
+Attached to EC2 instances:
+
+Policy: CloudWatchAgentServerPolicy (AWS managed)
+
+Allows:
+
+cloudwatch:PutMetricData
+
+logs:CreateLogGroup
+
+logs:CreateLogStream
+
+logs:PutLogEvents
+
+ec2:DescribeVolumes
+
+ec2:DescribeTags
+
+How to attach:
+
+bash
+# Via AWS Console
+EC2 → Instances → Select instance → Actions → Security → Modify IAM role
+→ Attach role with CloudWatchAgentServerPolicy
+
+# Or via CLI
+aws iam attach-role-policy \
+  --role-name <EC2-ROLE-NAME> \
+  --policy-arn arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+Installation Steps
+Step 1: Create Namespace
+bash
+kubectl create namespace amazon-cloudwatch
+Step 2: Create RBAC Resources
+ServiceAccount for both Fluent Bit and CloudWatch Agent:
+
+bash
+kubectl apply -f - <<EOF
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: fluent-bit
+  namespace: amazon-cloudwatch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: fluent-bit-role
+rules:
+  - apiGroups: [""]
+    resources:
+      - namespaces
+      - pods
+      - pods/logs
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: fluent-bit-role-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: fluent-bit-role
+subjects:
+  - kind: ServiceAccount
+    name: fluent-bit
+    namespace: amazon-cloudwatch
+EOF
+Step 3: Deploy Fluent Bit for Log Collection
+Purpose: Collects logs from all pods and sends to CloudWatch Logs
+
+bash
+kubectl apply -f - <<EOF
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fluent-bit-config
+  namespace: amazon-cloudwatch
+  labels:
+    k8s-app: fluent-bit
+data:
+  fluent-bit.conf: |
+    [SERVICE]
+        Flush                     5
+        Log_Level                 info
+        Daemon                    off
+        Parsers_File              parsers.conf
+        HTTP_Server               On
+        HTTP_Listen               0.0.0.0
+        HTTP_Port                 2020
+
+    @INCLUDE application-log.conf
+
+  application-log.conf: |
+    [INPUT]
+        Name                tail
+        Tag                 application.*
+        Path                /var/log/containers/*.log
+        Parser              docker
+        DB                  /var/fluent-bit/state/flb_container.db
+        Mem_Buf_Limit       50MB
+        Skip_Long_Lines     On
+        Refresh_Interval    10
+
+    [FILTER]
+        Name                kubernetes
+        Match               application.*
+        Kube_URL            https://kubernetes.default.svc:443
+        Kube_CA_File        /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        Kube_Token_File     /var/run/secrets/kubernetes.io/serviceaccount/token
+        Kube_Tag_Prefix     application.var.log.containers.
+        Merge_Log           On
+        Keep_Log            On
+        K8S-Logging.Parser  On
+        K8S-Logging.Exclude Off
+
+    [OUTPUT]
+        Name                cloudwatch_logs
+        Match               application.*
+        region              us-east-1
+        log_group_name      /aws/k8s/self-managed/application
+        log_stream_prefix   \${HOSTNAME}-
+        auto_create_group   true
+
+  parsers.conf: |
+    [PARSER]
+        Name                docker
+        Format              json
+        Time_Key            time
+        Time_Format         %Y-%m-%dT%H:%M:%S.%L
+        Time_Keep           On
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: fluent-bit
+  namespace: amazon-cloudwatch
+  labels:
+    k8s-app: fluent-bit
+spec:
+  selector:
+    matchLabels:
+      k8s-app: fluent-bit
+  template:
+    metadata:
+      labels:
+        k8s-app: fluent-bit
+    spec:
+      serviceAccountName: fluent-bit
+      containers:
+      - name: fluent-bit
+        image: amazon/aws-for-fluent-bit:latest
+        imagePullPolicy: Always
+        env:
+        - name: AWS_REGION
+          value: "us-east-1"
+        - name: HOSTNAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        volumeMounts:
+        - name: varlog
+          mountPath: /var/log
+        - name: varlibdockercontainers
+          mountPath: /var/lib/docker/containers
+          readOnly: true
+        - name: fluent-bit-config
+          mountPath: /fluent-bit/etc/
+        - name: fluent-bit-state
+          mountPath: /var/fluent-bit/state
+        resources:
+          limits:
+            memory: 200Mi
+          requests:
+            cpu: 100m
+            memory: 100Mi
+      terminationGracePeriodSeconds: 10
+      volumes:
+      - name: varlog
+        hostPath:
+          path: /var/log
+      - name: varlibdockercontainers
+        hostPath:
+          path: /var/lib/docker/containers
+      - name: fluent-bit-config
+        configMap:
+          name: fluent-bit-config
+      - name: fluent-bit-state
+        hostPath:
+          path: /var/fluent-bit/state
+      tolerations:
+      - effect: NoSchedule
+        key: node-role.kubernetes.io/control-plane
+      - effect: NoSchedule
+        key: node-role.kubernetes.io/master
+EOF
+Step 4: Deploy CloudWatch Agent for Metrics
+Purpose: Collects node-level system metrics (CPU, memory, disk, network)
+
+Create ConfigMap:
+
+bash
+kubectl apply -f - <<EOF
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cwagentconfig
+  namespace: amazon-cloudwatch
+data:
+  config.json: |
+    {
+      "agent": {
+        "region": "us-east-1"
+      },
+      "metrics": {
+        "namespace": "K8sSelfManaged/Nodes",
+        "metrics_collected": {
+          "cpu": {
+            "measurement": [
+              {
+                "name": "cpu_usage_idle",
+                "rename": "CPU_IDLE",
+                "unit": "Percent"
+              },
+              {
+                "name": "cpu_usage_iowait",
+                "rename": "CPU_IOWAIT",
+                "unit": "Percent"
+              }
+            ],
+            "metrics_collection_interval": 60,
+            "totalcpu": false
+          },
+          "disk": {
+            "measurement": [
+              {
+                "name": "used_percent",
+                "rename": "DISK_USED",
+                "unit": "Percent"
+              }
+            ],
+            "metrics_collection_interval": 60,
+            "resources": ["*"]
+          },
+          "mem": {
+            "measurement": [
+              {
+                "name": "mem_used_percent",
+                "rename": "MEM_USED",
+                "unit": "Percent"
+              }
+            ],
+            "metrics_collection_interval": 60
+          },
+          "netstat": {
+            "measurement": [
+              {
+                "name": "tcp_established",
+                "rename": "TCP_ESTABLISHED",
+                "unit": "Count"
+              }
+            ],
+            "metrics_collection_interval": 60
+          }
+        },
+        "aggregation_dimensions": [
+          ["InstanceId"],
+          ["InstanceId", "InstanceType"]
+        ]
+      }
+    }
+EOF
+Deploy DaemonSet:
+
+bash
+kubectl apply -f - <<EOF
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: cloudwatch-agent
+  namespace: amazon-cloudwatch
+spec:
+  selector:
+    matchLabels:
+      name: cloudwatch-agent
+  template:
+    metadata:
+      labels:
+        name: cloudwatch-agent
+    spec:
+      serviceAccountName: fluent-bit
+      containers:
+      - name: cloudwatch-agent
+        image: amazon/cloudwatch-agent:latest
+        env:
+        - name: HOST_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.hostIP
+        - name: HOST_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: K8S_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        resources:
+          limits:
+            cpu: 200m
+            memory: 200Mi
+          requests:
+            cpu: 100m
+            memory: 100Mi
+        volumeMounts:
+        - name: cwagentconfig
+          mountPath: /etc/cwagentconfig
+        - name: rootfs
+          mountPath: /rootfs
+          readOnly: true
+        - name: dockersock
+          mountPath: /var/run/docker.sock
+          readOnly: true
+        - name: varlibdocker
+          mountPath: /var/lib/docker
+          readOnly: true
+        - name: sys
+          mountPath: /sys
+          readOnly: true
+        - name: devdisk
+          mountPath: /dev/disk
+          readOnly: true
+      volumes:
+      - name: cwagentconfig
+        configMap:
+          name: cwagentconfig
+      - name: rootfs
+        hostPath:
+          path: /
+      - name: dockersock
+        hostPath:
+          path: /var/run/docker.sock
+      - name: varlibdocker
+        hostPath:
+          path: /var/lib/docker
+      - name: sys
+        hostPath:
+          path: /sys
+      - name: devdisk
+        hostPath:
+          path: /dev/disk
+      tolerations:
+      - effect: NoSchedule
+        operator: Exists
+EOF
+
+
+Accessing Data in CloudWatch
+Logs
+Location: AWS Console → CloudWatch → Log Groups
+
+Log Group Name: /aws/k8s/self-managed/application
